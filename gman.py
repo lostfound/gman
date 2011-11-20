@@ -1,0 +1,324 @@
+#!/usr/bin/python
+# -*- coding: utf8 -*-
+
+import  os, sys
+from subprocess import *
+import codecs
+links = {} 
+def get_html_sources( docs_dir ):
+	return map( lambda h: (h, os.path.join( docs_dir, h)),
+			filter ( lambda f: f.startswith('glib-')  and f.endswith('.html') and f[5].isupper(), os.listdir(docs_dir) )
+		  )
+
+def generate_mans(sources, dest_dir):
+	devnull = open('/dev/null', 'w')
+	man_pages = []
+	for name,path in sources:
+		man_path = os.path.join(dest_dir, name.rsplit('.',1)[0] + '.3')
+		man_page = ManPage()
+		man_pages.append(man_page)
+
+		program = Popen(['lynx', '--dump', '--nolist', '--width=10024', path], stdout=PIPE, stderr=devnull)
+		lines = program.stdout.readlines()
+		program.wait()
+		man_page.prepare(name.rsplit('.',1)[0].replace('-', '_'), lines)
+
+			
+	types = set(['void', 'int', 'long', 'short', 'float', 'double', 'char', 'const', 'struct', 'union', 'enum'])
+	defines = set()
+	functions = set()
+	for man_page in man_pages:
+		for t in man_page.types:
+			types.add(t)
+		for t in man_page.defines:
+			defines.add(t)
+		for t in man_page.functions:
+			functions.add(t)
+
+	for man_page in man_pages:
+		with codecs.open(os.path.join( dest_dir, man_page.get_filename()), "w", "utf8") as fd:
+			man_page.write_man(fd, types, defines, functions)
+	for man_page in man_pages:
+		for l in man_page.types:
+			try:
+				os.symlink( man_page.get_filename(), os.path.join(dest_dir, l + '.3glib'))
+			except Exception,e:
+				print e, l, 't'
+
+		for l in man_page.defines:
+			try:
+				os.symlink( man_page.get_filename(), os.path.join(dest_dir, l + '.3glib'))
+			except Exception,e:
+				print e, l, 'd'
+
+		for l in man_page.functions:
+			try:
+				os.symlink( man_page.get_filename(), os.path.join(dest_dir, l + '.3glib'))
+			except Exception,e:
+				print e, l, 'f'
+
+def formate(line, types, defines, functions):
+	n = 0
+	llen = len(line)
+	ret = u''
+	m = False
+	punctuation = ['*', '(', ')', ';', '.', '-', '>']
+	while n < llen:
+		if line[n].isspace():
+			ret += line[n]
+			n += 1
+		elif line[n] in punctuation:
+			ret += line[n]
+			n+=1
+
+		else:
+			N = n+1
+			if N > llen:
+				ret += line[n]
+				break
+			while N < llen:
+				if line[N].isspace() or line[N] in punctuation:
+					break
+				N+=1
+			word = line[n:N]
+			n = N
+			if word in types:
+				ret += '\\fI' + word + '\\fR'
+			elif word in defines:
+				ret += '\\fB' + word + '\\fR'
+			elif word in functions:
+				ret += '\\fB' + word + '\\fR'
+			else:
+				ret += word
+	return ret
+	
+class ManPage:
+	def __init__(s):
+		s.functions = []
+		s.types = []
+		s.defines = []
+		s.name = []
+		s.synopsis = []
+		s.description = []
+		s.details = []
+		s.see_also = []
+		s.man_name = u""
+	def get_filename(s):
+		return s.man_name + '.3glib'
+	def write_man(s, fd, types, defines, functions):
+		fd.write('.TH "%s" 3 2011-11-11 "GLib" "GLib Reference Manual"\n' % s.man_name)
+		fd.write('.SH NAME\n')
+		for line in map(lambda l: l.strip().rstrip(), s.name):
+			fd.write(line)
+			fd.write('\n')
+		fd.write(".SH SYNOPSIS\n")
+		for line in s.synopsis:
+			if line.startswith('#include'):
+				fd.write(line)
+			else:
+				sline = line.split()
+				if len(sline) > 1:
+					nl = u""
+					for l in sline:
+						if nl == u"":
+							nl = l
+						else:
+							nl += " " + l
+					fd.write( formate(nl, types, defines, functions) )
+				else:
+					fd.write( formate(line, types, defines, functions) )
+			fd.write("\n.br\n")
+		fd.write(".SH DESCRIPTION\n")
+		for line in s.description:
+			fd.write( formate(line, types, defines, functions) )
+		fd.write(".SH DETAILS\n")
+		p = False
+		for line in s.details:
+			if "____" in line:
+				pass
+			elif line.strip() == '':
+				pass
+			elif not line[0].isspace() and not p:
+				fd.write( '\n.IP "\\fB' )
+				line = line.rstrip()
+				fd.write( line )
+				fd.write( '\\fR"\n')
+				p = True
+			else:
+				fd.write( formate(line, types, defines, functions) )
+				p = False
+			pass
+		if s.see_also != []:
+			fd.write(".SH SEE ALSO\n")
+			for line in s.see_also:
+				line = line.strip()
+				if "____" in line:
+					pass
+				elif line != "":
+					fd.write( line + '\n')
+	def prepare(s, name, lines):
+		depth = 0
+		s.man_name = name
+		for line in map(lambda x: unicode(x.decode('utf8')), lines):
+			if depth == 0:
+				if 'description' in line.lower():
+					depth += 1
+					sn = 0
+			elif depth == 1:
+				if 'synopsis' in line.lower():
+					depth += 1
+				elif sn == 0:
+					if u'—' in line:
+						sn = 1
+						line = line.replace(u'—', '\\-')
+						s.name.append(line)
+				else:
+					s.name.append(line.replace(u'—', '\\-'))
+			elif depth == 2:
+				if 'description' in line.lower():
+					s.synopsis = parseSynopsis(s.synopsis)
+					depth += 1
+				else:
+					s.synopsis.append(line)
+			elif depth == 3:
+				if 'details' in line.lower():
+					depth += 1
+				else:
+					s.description.append(line)
+			elif depth == 4:
+				if 'see also' == line.rstrip().lower():
+					depth += 1
+				elif "generated by gtk-doc" in line.lower():
+					pass
+				else:
+					s.details.append(line)
+			elif depth == 5:
+				if "generated by gtk-doc" in line.lower():
+					pass
+				else:
+					s.see_also.append(line)
+		s.prepare_synopsis()
+	
+	def prepare_synopsis(s):
+		for line in s.synopsis:
+			line = line.strip()
+			sline = line.strip().split()
+			if line == "":
+				pass
+			elif line.startswith('enum') or line.startswith('struct') or line.startswith('union') or line.startswith('typedef'):
+				new_type = sline[1]
+				if new_type[-1] == ';':
+					new_type = new_type[:-1]
+				s.types.append(new_type)
+			elif line.startswith('extern'):
+				if sline[1] == 'const':
+					n = 3
+				else:
+					n = 2
+				elm = sline[n]
+				if elm == '*' or elm == "**":
+					n+=1
+					elm = sline[n]
+
+				if elm == 'const':
+					n+=1
+					elm = sline[n]
+					if elm == '*' or elm == "**":
+						n+=1
+						elm = sline[n]
+				if elm[-1] == ';':
+					elm = elm[:-1]
+				s.functions.append(elm)
+				
+			elif line.startswith('#include'):
+				pass
+			elif line.startswith('#define'):
+				s.defines.append(sline[1])
+			elif len(sline) > 1:
+				if sline[0] == 'const':
+					n = 2
+				else:
+					n = 1
+				elm = sline[n]
+				if elm == '*' or elm == "**":
+					n+=1
+					elm = sline[n]
+
+				if elm == 'const':
+					n+=1
+					elm = sline[n]
+					if elm == '*' or elm == "**":
+						n+=1
+						elm = sline[n]
+
+
+				if elm.startswith('(*'):
+					elm = elm[2:-1]
+					s.types.append(elm)
+				else:
+					s.functions.append(elm)
+			else:
+				new_type = line
+				if new_type[-1] == ';':
+					new_type = new_type[:-1]
+				s.types.append(new_type)
+
+def parseSynopsis(lines):
+	new_lines = []
+	cur_line = None
+	n = 0
+	llen = len(lines)
+	while n < llen:
+		line = lines[n].strip().rstrip()
+		if line.startswith('#include'):
+			new_lines.append(line)
+		else:
+			N1 = line.count('(')
+			N2 = line.count(')')
+			if N1 <= N2:
+				new_lines.append(line)
+			
+			else:
+				n += 1
+				cur_line = line
+				while n < llen:
+					line = lines[n].strip().rstrip()
+					cur_line += ' ' + line
+					N1 += line.count('(')
+					N2 += line.count(')')
+					if N1 <= N2:
+						new_lines.append(cur_line)
+						break
+					n += 1
+				if n >= llen:
+					raise Exception("shit")
+
+		n += 1
+	ret = []
+	for line in new_lines:
+		if line.startswith('('):
+			ret[-1] += ' ' + line
+		else:
+			ret.append(line)
+	return ret
+
+def usage():
+	progname =  os.path.basename( sys.argv[0] )
+	print "usage: %s GLIB-HTML-DIR DEST-MAN-DIR" % progname
+	print "      " + " "*len(progname), "- Generates manpages from GLIB-HTML-DIR/glib-*.html files"
+
+if __name__ == '__main__':
+	if len(sys.argv) != 3:
+		usage()
+		sys.exit(0)
+	glib_dir = sys.argv[1]
+	man_dir  = os.path.join(sys.argv[2], 'man3')
+	try:
+		os.makedirs( man_dir, mode = 0755 )
+	except:
+		pass
+	sources = get_html_sources(glib_dir)
+	generate_mans(sources, man_dir)
+
+
+
