@@ -1,1 +1,9 @@
 Generating glib manual pages from htmls.
+
+gman.py:
+	USAGE:
+		* gman.py GLIB-HTML-DIR DEST-MAN-DIR
+			- Generates manpages from GLIB-HTML-DIR/glib-*.html files 
+	DEPENDENCES:
+		* python 2.6 or highter
+		* lynx
